@@ -14,15 +14,19 @@ Contributions welcome; open an issue to claim one.
 - Deep-link / intent tester (exported components + deep links as `adb am` commands)
 - Version diff (permissions / components / classes / URLs / flags)
 - Frida hook generator (trace / stacktrace / return-override / SSL & root bypass)
+- **Native `.so` analysis** — pure-stdlib ELF parser: arch, JNI entry points, exports/imports, NEEDED libs, exploit mitigations (NX/RELRO/canary/FORTIFY), URLs/strings + secret scan; shown read-only in the editor. Optional radare2 pseudo-code backend (`decompile_native`).
+- **One-click "Make interceptable" (MITM) patch** — debuggable + a `network_security_config` trusting user CA certs + cleartext, via the `[ PATCH ▾ ]` menu (`make_interceptable`).
+- **Guided smali patches** — right-click a method → force return true/false, return null/0, no-op → smali rewrite, then BUILD (`patch_method`). Static counterpart to the Frida generator.
+- **Editor method menu** — right-click a Java/smali method for Frida (trace / override return), "ask Claude for a Frida hook", and the guided smali patches above.
 - Built-in Claude assistant (conversation memory, editable pre-prompt, orange tree-flash on file reads)
 - Missing-tool handling + setup banner, apktool version warning + updater
 - Cross-platform (macOS/Windows/Linux), native macOS Dock app, MCP server for Claude Code
 
 ## Biggest capability gaps (next)
 
-- [ ] **Native `.so` analysis** — hand `.so` files to the REA tools for decompiled pseudo-code + exports, shown in the editor. Unblocks Flutter / NDK / game apps where logic lives in native code.
-- [ ] **One-click "Make interceptable" (MITM) patch** — set `android:debuggable="true"` and inject a `network_security_config` that trusts user CA certs, then rebuild + sign. The standard prep for Burp / mitmproxy.
-- [ ] **Guided smali patches** — pick a method → "force return true/false", "bypass root/premium check", "neutralize a call" → apply the smali edit, then BUILD. Static counterpart to the Frida generator.
+- [ ] **Native pseudo-code in the GUI** — surface `decompile_native` (radare2) in the editor with a function picker; bundle/offer a Ghidra-headless backend for richer output. (ELF structural analysis already ships.)
+- [ ] **More guided patches** — "neutralize a specific call" (remove an `invoke-*` + its `move-result`), signature/integrity-check bypass, and overload-specific targeting (by descriptor, not just name).
+- [ ] **Patch review/undo** — show a diff of what a one-click patch changed, and a one-click revert (re-decompile or keep a backup of edited smali/manifest).
 
 ## Dynamic analysis (uses adb / maestro)
 

@@ -598,6 +598,10 @@ class H(BaseHTTPRequestHandler):
                 self._json(core.intents(p))
             elif u.path == "/api/counterpart":
                 self._json(core.counterpart(p, q["path"]))
+            elif u.path == "/api/native":
+                a = core.native_report(p, q["path"])
+                self._json({"report": core.native.format_report(a), "urls": a.get("urls", []),
+                            "secrets": a.get("secrets", {}), "jni": a.get("jni", {})})
             elif u.path == "/api/diff":
                 self._json(core.diff_versions(q["a"], q["b"]))
             elif u.path == "/api/preprompt":
@@ -643,6 +647,21 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/frida":
                 return self._json(core.frida_script(body["project"], body.get("class", ""),
                                                     body.get("method", ""), body.get("template", "trace")))
+            if u.path == "/api/patch":
+                proj = core._project_dir(body["project"])
+                op = body.get("op")
+                if op == "mitm":
+                    return self._json(core.patches.make_interceptable(proj / "apktool"))
+                if op == "method":
+                    files = [proj / x for x in core.smali_paths(body["project"], body["class"])]
+                    if not files:
+                        return self._json({"error": f"no smali found for {body['class']}"}, 400)
+                    return self._json(core.patches.patch_method_return(files, body["method"],
+                                                                       body.get("action", "force_true")))
+                return self._json({"error": f"unknown patch op: {op}"}, 400)
+            if u.path == "/api/decompile_native":
+                f = core._safe_join(core._project_dir(body["project"]), body["path"])
+                return self._json(core.native.decompile_native(f, body.get("symbol", "")))
             if u.path == "/api/preprompt":
                 HOME.mkdir(parents=True, exist_ok=True)
                 PREPROMPT_FILE.write_text(body["text"], encoding="utf-8")

@@ -28,6 +28,8 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).parent))
 import tools  # noqa: E402
+import native  # noqa: E402  (pure-stdlib ELF/.so analysis)
+import patches  # noqa: E402  (manifest + smali patch engine)
 
 tools.activate()  # managed ~/.tonkre/tools (jadx, apktool, JDK, SDK) onto PATH for every subprocess
 
@@ -753,13 +755,70 @@ def smali_for_class(project: str, class_name: str) -> str:
     return "\n".join(paths) if paths else f"No smali found for {class_name}."
 
 
+# ---------- native (.so / ELF) analysis ----------
+
+def native_report(project: str, path: str) -> dict:
+    """Static ELF analysis of a native lib, extended with a secret scan over its strings."""
+    f = _safe_join(_project_dir(project), path)
+    if not f.is_file():
+        raise ValueError(f"not a file: {path}")
+    a = native.analyze_so(f)
+    joined = "\n".join(a.get("strings", []) + a.get("urls", []))  # reuse SECRET_PATTERNS (DRY)
+    found = {name: sorted(set(re.findall(pat, joined)))[:20]
+             for name, pat in SECRET_PATTERNS.items() if re.search(pat, joined)}
+    if found:
+        a["secrets"] = found
+    return a
+
+
+@mcp.tool()
+def analyze_native(project: str, path: str) -> str:
+    """Static analysis of a native .so/ELF library: architecture, JNI entry points (Java_*/
+    JNI_OnLoad), exported & imported functions, NEEDED libraries, exploit mitigations (NX/RELRO/
+    canary/FORTIFY), and URLs/strings. `path` is project-relative, e.g.
+    'apktool/lib/arm64-v8a/libfoo.so' (see native_libs from apk_info)."""
+    return _truncate(native.format_report(native_report(project, path)))
+
+
+@mcp.tool()
+def decompile_native(project: str, path: str, symbol: str = "") -> str:
+    """Pseudo-decompile/disassemble a function in a native .so with radare2 (if installed).
+    `symbol` defaults to the entry point; pass a JNI name like 'Java_com_x_A_foo'. If radare2 is
+    not installed, returns an install hint instead."""
+    f = _safe_join(_project_dir(project), path)
+    return _truncate(json.dumps(native.decompile_native(f, symbol), indent=2))
+
+
+# ---------- one-click / guided patches ----------
+
+@mcp.tool()
+def make_interceptable(project: str) -> str:
+    """One-click MITM prep: set the app debuggable, add a network-security-config that trusts
+    user CA certs, and allow cleartext, so Burp/mitmproxy can intercept TLS. Edits the manifest
+    and resources, so rebuild with a FULL apktool BUILD (not the code-only fallback), then SIGN."""
+    return _truncate(json.dumps(patches.make_interceptable(_project_dir(project) / "apktool"), indent=2))
+
+
+@mcp.tool()
+def patch_method(project: str, class_name: str, method: str, action: str = "force_true") -> str:
+    """Guided smali patch: rewrite every overload of a method to immediately return a constant.
+    actions: 'force_true', 'force_false', 'return_zero', 'return_null', 'noop' (void methods).
+    Ideal for root/premium/license gates. Then BUILD+SIGN. Static counterpart to a Frida hook."""
+    files = [_project_dir(project) / p for p in smali_paths(project, class_name)]
+    if not files:
+        return f"No smali found for {class_name}."
+    return _truncate(json.dumps(patches.patch_method_return(files, method, action), indent=2))
+
+
 # ---------- CLI ----------
 
 def cli(argv: list[str]) -> None:
     usage = ("usage: tonkre <decompile APK [--force] [--deobf] | info PROJECT | projects | "
              "search PROJECT REGEX [scope] | secrets PROJECT | urls PROJECT | security PROJECT | "
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
-             "smali PROJECT CLASS | setup [status|all|COMPONENT...] [--accept-android-license]>")
+             "smali PROJECT CLASS | native PROJECT SO_PATH | mitm PROJECT | "
+             "patch PROJECT CLASS METHOD [force_true|force_false|return_zero|return_null|noop] | "
+             "setup [status|all|COMPONENT...] [--accept-android-license]>")
     if not argv:
         sys.exit(usage)
     cmd, *rest = argv
@@ -790,6 +849,12 @@ def cli(argv: list[str]) -> None:
                            rest[3] if len(rest) > 3 else "trace")["script"])
     elif cmd == "smali" and len(rest) >= 2:
         print(smali_for_class(rest[0], rest[1]))
+    elif cmd == "native" and len(rest) >= 2:
+        print(analyze_native(rest[0], rest[1]))
+    elif cmd == "mitm" and rest:
+        print(make_interceptable(rest[0]))
+    elif cmd == "patch" and len(rest) >= 3:
+        print(patch_method(rest[0], rest[1], rest[2], rest[3] if len(rest) > 3 else "force_true"))
     else:
         sys.exit(usage)
 

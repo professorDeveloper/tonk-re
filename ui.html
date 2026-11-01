@@ -170,6 +170,13 @@ body.resizing{cursor:col-resize;user-select:none}
 #setup h4 button{margin-left:auto;border:none;font-size:15px;padding:0 4px}
 #setup .tool{color:var(--red)} #setup code{color:var(--hi);font-family:'IBM Plex Mono';font-size:12px;display:block;margin:1px 0 6px}
 #setup .opt{color:var(--dim)}
+#ctxmenu{position:fixed;z-index:60;background:var(--panel);border:1px solid var(--dim);box-shadow:0 0 16px rgba(0,0,0,.85);
+  min-width:220px;font-size:17px;display:none}
+#ctxmenu.on{display:block}
+#ctxmenu .mh{padding:2px 12px;color:var(--amber);border-bottom:1px solid var(--line);font-size:15px}
+#ctxmenu .mi{padding:3px 12px;cursor:pointer;white-space:nowrap}
+#ctxmenu .mi:hover{background:var(--fg);color:var(--bg);text-shadow:none}
+#ctxmenu .msep{border-top:1px solid var(--line);margin:2px 0}
 #diffModal{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:45;display:none;align-items:center;justify-content:center}
 #diffModal.on{display:flex}
 #diffModal .dlg{width:min(900px,92vw);max-height:86vh;background:var(--panel);border:1px solid var(--dim);
@@ -229,6 +236,7 @@ body.resizing{cursor:col-resize;user-select:none}
     <span class="sep">│</span>
     <button id="bResign" class="warn">[ RESIGN APK ]</button>
     <button id="bDiff">[ DIFF ⇄ ]</button>
+    <button id="bPatch" class="warn" data-p title="One-click patches: MITM / make interceptable">[ PATCH ▾ ]</button>
     <button id="bSetup" title="Install / check jadx, apktool, JDK, Android tools, frida">[ SETUP ⚙ ]</button>
   </div>
 
@@ -341,6 +349,8 @@ select code in the editor to send it as context. [ NEW SESSION ] starts fresh.</
     <pre id="log"></pre>
   </section>
 </div>
+
+<div id="ctxmenu"></div>
 
 <div id="diffModal">
   <div class="dlg">
@@ -590,21 +600,39 @@ function modeFor(p) {
 const showEmpty = on => $("#empty").style.display = on ? "flex" : "none";
 
 async function openFile(path, line) {
+  // native libs open as a read-only analysis report, not raw bytes
+  if (/\.so$/i.test(path) && !files[path]) return openNative(path);
   if (!files[path]) {
     let r;
     try { r = await get("/api/file", {project, path}); } catch (e) { return log("[-] " + e.message); }
-    if (r.binary) return log(`[!] ${path} is binary (${r.size} bytes). Ask Claude to analyze it with REA, or reveal it in Finder.`);
+    if (r.binary) return log(`[!] ${path} is binary (${r.size} bytes). .so libs open as a native report; for other binaries ask Claude, or reveal it in Finder.`);
     files[path] = {doc: CodeMirror.Doc(r.content, modeFor(path)), dirty: false, loading: true};
     files[path].doc.markClean(); files[path].loading = false;
   }
   current = path; showEmpty(false);
   cm.swapDoc(files[path].doc); cm.refresh();
-  $("#fName").textContent = path; $("#fMode").textContent = modeFor(path).toUpperCase();
+  cm.setOption("readOnly", !!files[path].synthetic);
+  $("#fName").textContent = path + (files[path].synthetic ? "  (read-only)" : "");
+  $("#fMode").textContent = files[path].mode || modeFor(path).toUpperCase();
   $$(".node.active").forEach(n => n.classList.remove("active"));
-  const n = $(`.node[data-path="${CSS.escape(path)}"]`); n && n.classList.add("active");
+  const n = $(`.node[data-path="${CSS.escape(path.replace(/^native:\/\//, ""))}"]`); n && n.classList.add("active");
   renderTabs();
-  updateCounterpart(path);
+  updateCounterpart(files[path].synthetic ? "" : path);
   if (line) jump(line);
+}
+
+// native .so analysis -> read-only synthetic document
+async function openNative(path) {
+  log(`[*] analyzing native lib ${path} ...`);
+  let r;
+  try { r = await get("/api/native", {project, path}); } catch (e) { return log("[-] " + e.message); }
+  const key = "native://" + path;
+  files[key] = {doc: CodeMirror.Doc(r.report || "(no output)", "text/plain"),
+                dirty: false, loading: false, synthetic: true, mode: "NATIVE", realPath: path};
+  files[key].doc.markClean();
+  await openFile(key);
+  if (r.secrets && Object.keys(r.secrets).length) log(`[!] native secrets found: ${Object.keys(r.secrets).join(", ")}`);
+  if (r.jni && r.jni.count) log(`[*] ${r.jni.count} JNI entry point(s) — right-click a Java_* name to hook it, or use decompile_native via Claude`);
 }
 // Java <-> smali linking: footer button jumps to the other representation
 async function updateCounterpart(path) {
@@ -645,6 +673,7 @@ function renderTabs() {
 }
 async function save(p = current) {
   if (!p || !files[p]) return;
+  if (files[p].synthetic) return log("[!] this is a read-only analysis view, nothing to save");
   try {
     await post("/api/save", {project, path: p, content: files[p].doc.getValue()});
     files[p].doc.markClean(); files[p].dirty = false; renderTabs();
@@ -729,6 +758,115 @@ $("#bFrida").onclick = async e => {
   btn.classList.remove("busy");
 };
 
+// ---------- context menu (shared) ----------
+function showMenu(x, y, header, items) {
+  const m = $("#ctxmenu");
+  m.innerHTML = (header ? `<div class="mh">${esc(header)}</div>` : "") +
+    items.map((it, i) => it.sep ? `<div class="msep"></div>` : `<div class="mi" data-i="${i}">${esc(it.label)}</div>`).join("");
+  m.style.left = Math.min(x, innerWidth - 240) + "px";
+  m.style.top = Math.min(y, innerHeight - items.length * 26 - 10) + "px";
+  m.classList.add("on");
+  m.querySelectorAll(".mi").forEach(el => el.onclick = () => { hideMenu(); items[+el.dataset.i].fn(); });
+}
+const hideMenu = () => $("#ctxmenu").classList.remove("on");
+document.addEventListener("click", hideMenu);
+document.addEventListener("scroll", hideMenu, true);
+window.addEventListener("resize", hideMenu);
+
+// ---------- one-click patches ----------
+$("#bPatch").onclick = e => {
+  e.stopPropagation();  // don't let this same click bubble to the document handler that closes the menu
+  const r = e.currentTarget.getBoundingClientRect();
+  showMenu(r.left, r.bottom, "ONE-CLICK PATCH", [
+    {label: "Make interceptable (MITM / Burp)", fn: patchMitm},
+  ]);
+};
+async function patchMitm() {
+  if (busy) return log("[!] busy, wait for the current job");
+  if (!confirm("Make the app interceptable?\n\nSets android:debuggable=true, allows cleartext, and adds a " +
+    "network-security-config that trusts user CA certs (Burp / mitmproxy).\n\nThis edits the manifest + resources, " +
+    "so it needs a FULL apktool BUILD (3.x) — the code-only fallback keeps the original manifest.")) return;
+  try {
+    const r = await post("/api/patch", {project, op: "mitm"});
+    if (r.error) return log("[-] " + r.error);
+    log(`[+] MITM patch applied: ${r.changes.join(", ")}`);
+    log(`[*] ${r.next}`);
+    await refreshDir("apktool");
+    delete files["apktool/AndroidManifest.xml"];
+    await openFile("apktool/AndroidManifest.xml");
+  } catch (e) { log("[-] " + e.message); }
+}
+async function patchMethod(cls, method, action) {
+  if (busy) return log("[!] busy, wait for the current job");
+  if (!confirm(`Patch ${cls}.${method}()  →  ${action}?\n\nThis rewrites the smali so the method returns immediately. ` +
+    `Then BUILD+SIGN to apply.`)) return;
+  try {
+    const r = await post("/api/patch", {project, op: "method", class: cls, method, action});
+    if (r.error) return log("[-] " + r.error);
+    if (!r.count) return log(`[!] ${r.next}`);
+    log(`[+] patched ${r.count} method(s): ${r.patched.join("  |  ")}`);
+    if (r.skipped.length) log(`[!] skipped: ${r.skipped.join("; ")}`);
+    log(`[*] ${r.next}`);
+    // drop cached smali docs so the editor re-reads the patched bytes
+    const wasCurrent = current && /\.smali$/.test(current) ? current : null;
+    Object.keys(files).filter(p => /\.smali$/.test(p)).forEach(p => delete files[p]);
+    if (wasCurrent) { current = null; await openFile(wasCurrent); } else renderTabs();
+  } catch (e) { log("[-] " + e.message); }
+}
+
+// ---------- method actions (editor right-click: Frida / Claude / guided smali) ----------
+function classOf(path) {
+  const base = path.replace(/^(jadx\/sources|apktool\/smali[^/]*)\//, "").replace(/\.(java|smali)$/, "");
+  return base === path ? "" : base.replace(/\//g, ".").split("$")[0];
+}
+function methodAt(e) {
+  const sel = cm.getSelection().trim();
+  let method = /^[A-Za-z_<][\w$]*$/.test(sel) ? sel : "";
+  const pos = cm.coordsChar({left: e.clientX, top: e.clientY});
+  if (!method && /\.smali$/.test(current)) {
+    for (let ln = pos.line; ln >= 0; ln--) {
+      const m = cm.getLine(ln).match(/^\s*\.method\b.*?\b([A-Za-z_<][\w$<>]*)\s*\(/);
+      if (m) { method = m[1]; break; }
+    }
+  }
+  if (!method) { const w = cm.findWordAt(pos); method = cm.getRange(w.anchor, w.head).trim(); }
+  if (!/^[A-Za-z_<][\w$]*$/.test(method)) return null;
+  const cls = classOf(current);
+  return cls ? {cls, method} : null;
+}
+function fridaFor(cls, method, tpl) {
+  $('#rtabs [data-r="frida"]').click();
+  $("#fridaCls").value = cls; $("#fridaMethod").value = (method === "<init>" ? "$init" : method);
+  $("#fridaTpl").value = tpl;
+  $("#bFrida").click();
+}
+function askClaudeHook(cls, method) {
+  $('#rtabs [data-r="ai"]').click();
+  $("#ask").value = `Write a Frida hook for ${cls}.${method}(). Trace its arguments and return value, and if it ` +
+    `looks like a security gate (root / emulator / premium / license / signature check), show how to force the ` +
+    `result. Cite the file:line where the method is defined and explain what the hook does.`;
+  $("#ask").focus();
+  log("[*] prefilled a Claude prompt for a Frida hook — review it and hit ASK CLAUDE ⏎");
+}
+cm.getWrapperElement().addEventListener("contextmenu", e => {
+  if (!project || !current || !files[current] || files[current].synthetic) return;
+  if (!/\.(java|smali)$/.test(current)) return;
+  const info = methodAt(e);
+  if (!info) return;
+  e.preventDefault();
+  const {cls, method} = info;
+  showMenu(e.clientX, e.clientY, `${method}()  ·  ${cls.split(".").pop()}`, [
+    {label: `⟶ Frida: trace ${method}()`, fn: () => fridaFor(cls, method, "trace")},
+    {label: `⟶ Frida: override return value`, fn: () => fridaFor(cls, method, "return")},
+    {label: `⟶ Ask Claude for a Frida hook`, fn: () => askClaudeHook(cls, method)},
+    {sep: true},
+    {label: `✎ Smali patch: force → true`, fn: () => patchMethod(cls, method, "force_true")},
+    {label: `✎ Smali patch: force → false`, fn: () => patchMethod(cls, method, "force_false")},
+    {label: `✎ Smali patch: return null`, fn: () => patchMethod(cls, method, "return_null")},
+    {label: `✎ Smali patch: return 0`, fn: () => patchMethod(cls, method, "return_zero")},
+  ]);
+});
+
 // ---------- version diff ----------
 $("#bDiff").onclick = async () => {
   const ps = await get("/api/projects");
@@ -799,7 +937,7 @@ async function loadInfo() {
     let c = h.dataset.cls; if (c.startsWith(".")) c = i.package + c;
     openFile("jadx/sources/" + c.replace(/\./g, "/") + ".java");
   });
-  el.querySelectorAll("[data-path]").forEach(h => h.onclick = () => log(`[!] ${h.dataset.path} is native code: ask Claude to analyze it with REA`));
+  el.querySelectorAll("[data-path]").forEach(h => h.onclick = () => openFile(h.dataset.path));
 }
 
 // clickable "path:line:text" result lines
