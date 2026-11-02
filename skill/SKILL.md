@@ -30,7 +30,9 @@ Tools come from the `tonk-re` MCP server (`mcp__tonk-re__*`).
    entry points, exports/imports, NEEDED libs, exploit mitigations, URLs/strings) and
    `decompile_native(project, so_path, symbol)` for radare2 pseudo-code when installed. React Native
    (`assets/index.android.bundle`) and Flutter Dart snapshots still need `read_file` / other tools.
-10. **Report**: package, SDKs, frameworks, attack surface, confirmed findings with
-   `file:line` evidence and severity, and open questions.
+10. **Report**: `export_report(project)` writes a Markdown `AUDIT.md` into the project — manifest
+   attack surface, secrets, URLs, crypto/security findings and the signing cert with `file:line`
+   evidence and a risk summary. Treat its regex hits as leads; your written report should add
+   package, SDKs, frameworks, confirmed findings with severity, and open questions.
 
 Analyze only apps the user owns or is authorized to test.

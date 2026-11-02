@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import defusedxml.ElementTree as ET
@@ -30,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import tools  # noqa: E402
 import native  # noqa: E402  (pure-stdlib ELF/.so analysis)
 import patches  # noqa: E402  (manifest + smali patch engine)
+import report  # noqa: E402  (Markdown audit-report renderer)
 
 tools.activate()  # managed ~/.tonkre/tools (jadx, apktool, JDK, SDK) onto PATH for every subprocess
 
@@ -376,31 +378,71 @@ def search_code(project: str, pattern: str, scope: str = "java", ignore_case: bo
     return _truncate(f"{len(hits)} hits\n" + "\n".join(hits)) if hits else "No matches."
 
 
-@mcp.tool()
-def find_secrets(project: str, max_per_type: int = 30) -> str:
-    """Scan sources, resources and assets for hard-coded credentials (Google/AWS/Stripe/GitHub/
-    Slack keys, JWTs, private keys, generic api_key/secret/password assignments)."""
-    proj = _project_dir(project)
-    out = {}
+# Security-relevant API patterns, shared by the scanner and the report (DRY).
+SECURITY_CHECKS = {
+    "cipher_usage": r"Cipher\.getInstance\(",
+    "ecb_or_des": r"\"(?:AES|DES|DESede)(?:/ECB[^\"]*)?\"",
+    "insecure_trust": r"X509TrustManager|checkServerTrusted|ALLOW_ALL_HOSTNAME_VERIFIER|setHostnameVerifier",
+    "ssl_pinning": r"CertificatePinner|network-security-config|TrustKit|pin-set",
+    "webview_js": r"addJavascriptInterface|setJavaScriptEnabled\(true\)|setAllowFileAccess",
+    "dynamic_loading": r"DexClassLoader|PathClassLoader|InMemoryDexClassLoader|System\.loadLibrary",
+    "reflection": r"Class\.forName\(|getDeclaredMethod\(",
+    "root_detection": r"(?i)/system/xbin/su|Superuser\.apk|RootBeer|isRooted|magisk",
+    "anti_debug_frida": r"(?i)frida|isDebuggerConnected|TracerPid|xposed",
+    "exec": r"Runtime\.getRuntime\(\)\.exec|ProcessBuilder\(",
+    "raw_sql": r"rawQuery\(|execSQL\(",
+    "shared_prefs_world": r"MODE_WORLD_(?:READABLE|WRITEABLE)",
+}
+_URL_NOISE = ("schemas.android.com", "www.w3.org", "apache.org/licenses", "xmlpull.org", "ns.adobe.com")
+
+
+# Data producers — return structured dicts so both the MCP/CLI scanners and the audit
+# report build on one implementation (the scanners add their own JSON/text formatting).
+
+def _secrets_data(proj: Path, max_per_type: int = 30) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
     for name, pat in SECRET_PATTERNS.items():
         hits = _grep(proj, pat, ["!*.so", "!*.dex", "!*.png", "!*.jpg", "!*.webp"], max_per_type)
         if hits:
             out[name] = hits
+    return out
+
+
+def _urls_data(proj: Path) -> dict[str, str]:
+    """Unique endpoint -> first source file (project-relative), schema/namespace noise filtered."""
+    urls: dict[str, str] = {}
+    for h in _grep(proj, URL_RE, ["!*.so", "!*.dex", "!*.smali"], 5000):
+        for u in re.findall(URL_RE, h):
+            u = u.rstrip("\"');,.)")
+            if not any(n in u for n in _URL_NOISE) and u not in urls:
+                urls[u] = h.split(":", 1)[0]
+    return urls
+
+
+def _security_data(proj: Path) -> dict[str, list[str]]:
+    src = proj / "jadx" / "sources"
+    out: dict[str, list[str]] = {}
+    for k, pat in SECURITY_CHECKS.items():
+        # pinning is often declared in res/xml/network_security_config.xml, not code
+        root = proj if k == "ssl_pinning" else src
+        hits = _grep(root, pat, ["*.java", "*.xml"], 40)
+        if hits:
+            out[k] = hits
+    return out
+
+
+@mcp.tool()
+def find_secrets(project: str, max_per_type: int = 30) -> str:
+    """Scan sources, resources and assets for hard-coded credentials (Google/AWS/Stripe/GitHub/
+    Slack keys, JWTs, private keys, generic api_key/secret/password assignments)."""
+    out = _secrets_data(_project_dir(project), max_per_type)
     return _truncate(json.dumps(out, indent=2)) if out else "No secret patterns matched."
 
 
 @mcp.tool()
 def find_urls(project: str, max_hits: int = 400) -> str:
     """Extract unique URLs/endpoints from code and resources (filters common schema/namespace noise)."""
-    proj = _project_dir(project)
-    hits = _grep(proj, URL_RE, ["!*.so", "!*.dex", "!*.smali"], 5000)
-    noise = ("schemas.android.com", "www.w3.org", "apache.org/licenses", "xmlpull.org", "ns.adobe.com")
-    urls: dict[str, str] = {}
-    for h in hits:
-        for u in re.findall(URL_RE, h):
-            u = u.rstrip("\"');,.)")
-            if not any(n in u for n in noise) and u not in urls:
-                urls[u] = h.split(":", 1)[0]
+    urls = _urls_data(_project_dir(project))
     lines = [f"{u}    <- {src}" for u, src in sorted(urls.items())][:max_hits]
     return _truncate(f"{len(urls)} unique URLs\n" + "\n".join(lines))
 
@@ -409,29 +451,7 @@ def find_urls(project: str, max_hits: int = 400) -> str:
 def find_crypto_and_security(project: str) -> str:
     """Locate security-relevant API usage: crypto (Cipher/ECB/static IVs), TLS trust overrides,
     WebView JS bridges, dynamic code loading, root/emulator/Frida detection, SSL pinning, SQL."""
-    checks = {
-        "cipher_usage": r"Cipher\.getInstance\(",
-        "ecb_or_des": r"\"(?:AES|DES|DESede)(?:/ECB[^\"]*)?\"",
-        "insecure_trust": r"X509TrustManager|checkServerTrusted|ALLOW_ALL_HOSTNAME_VERIFIER|setHostnameVerifier",
-        "ssl_pinning": r"CertificatePinner|network-security-config|TrustKit|pin-set",
-        "webview_js": r"addJavascriptInterface|setJavaScriptEnabled\(true\)|setAllowFileAccess",
-        "dynamic_loading": r"DexClassLoader|PathClassLoader|InMemoryDexClassLoader|System\.loadLibrary",
-        "reflection": r"Class\.forName\(|getDeclaredMethod\(",
-        "root_detection": r"(?i)/system/xbin/su|Superuser\.apk|RootBeer|isRooted|magisk",
-        "anti_debug_frida": r"(?i)frida|isDebuggerConnected|TracerPid|xposed",
-        "exec": r"Runtime\.getRuntime\(\)\.exec|ProcessBuilder\(",
-        "raw_sql": r"rawQuery\(|execSQL\(",
-        "shared_prefs_world": r"MODE_WORLD_(?:READABLE|WRITEABLE)",
-    }
-    proj = _project_dir(project)
-    src = proj / "jadx" / "sources"
-    out = {}
-    for k, pat in checks.items():
-        # pinning is often declared in res/xml/network_security_config.xml, not code
-        root = proj if k == "ssl_pinning" else src
-        hits = _grep(root, pat, ["*.java", "*.xml"], 40)
-        if hits:
-            out[k] = hits
+    out = _security_data(_project_dir(project))
     return _truncate(json.dumps(out, indent=2)) if out else "No matches."
 
 
@@ -810,6 +830,49 @@ def patch_method(project: str, class_name: str, method: str, action: str = "forc
     return _truncate(json.dumps(patches.patch_method_return(files, method, action), indent=2))
 
 
+# ---------- audit report ----------
+
+def build_report_data(project: str) -> dict:
+    """Gather every analysis the report needs into one structured dict (reuses the scanners)."""
+    proj = _project_dir(project)
+    meta = json.loads((proj / "meta.json").read_text(encoding="utf-8"))
+    data = {
+        "project": project,
+        "apk": meta.get("apk"),
+        "sha256": meta.get("sha256"),
+        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "info": info(project),
+        "secrets": _secrets_data(proj),
+        "urls": _urls_data(proj),
+        "security": _security_data(proj),
+    }
+    try:
+        data["signing"] = signing_info(project)
+    except Exception:  # keytool/APK issues shouldn't sink the whole report
+        data["signing"] = None
+    return data
+
+
+def write_report(project: str) -> dict:
+    """Render AUDIT.md into the project directory. Returns a summary of what it contains."""
+    data = build_report_data(project)
+    md = report.build_markdown(data)
+    out = _project_dir(project) / "AUDIT.md"
+    out.write_text(md, encoding="utf-8")
+    return {"path": "AUDIT.md", "bytes": len(md.encode("utf-8")),
+            "secret_types": len(data["secrets"]), "urls": len(data["urls"]),
+            "security_groups": len(data["security"])}
+
+
+@mcp.tool()
+def export_report(project: str) -> str:
+    """Write a Markdown security-audit report (AUDIT.md) into the project, consolidating the
+    manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the
+    signing certificate with file:line evidence. Returns the path and a summary. Regex hits are
+    leads — verify each in context before relying on them."""
+    return _truncate(json.dumps(write_report(project), indent=2))
+
+
 # ---------- CLI ----------
 
 def cli(argv: list[str]) -> None:
@@ -818,6 +881,7 @@ def cli(argv: list[str]) -> None:
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
              "smali PROJECT CLASS | native PROJECT SO_PATH | mitm PROJECT | "
              "patch PROJECT CLASS METHOD [force_true|force_false|return_zero|return_null|noop] | "
+             "report PROJECT | "
              "setup [status|all|COMPONENT...] [--accept-android-license]>")
     if not argv:
         sys.exit(usage)
@@ -855,6 +919,8 @@ def cli(argv: list[str]) -> None:
         print(make_interceptable(rest[0]))
     elif cmd == "patch" and len(rest) >= 3:
         print(patch_method(rest[0], rest[1], rest[2], rest[3] if len(rest) > 3 else "force_true"))
+    elif cmd == "report" and rest:
+        print(export_report(rest[0]))
     else:
         sys.exit(usage)
 

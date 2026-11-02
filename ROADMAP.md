@@ -18,6 +18,8 @@ Contributions welcome; open an issue to claim one.
 - **One-click "Make interceptable" (MITM) patch** — debuggable + a `network_security_config` trusting user CA certs + cleartext, via the `[ PATCH ▾ ]` menu (`make_interceptable`).
 - **Guided smali patches** — right-click a method → force return true/false, return null/0, no-op → smali rewrite, then BUILD (`patch_method`). Static counterpart to the Frida generator.
 - **Editor method menu** — right-click a Java/smali method for Frida (trace / override return), "ask Claude for a Frida hook", and the guided smali patches above.
+- **Report export** — one-click `[ REPORT ↯ ]` (and `export_report` / `tonkre report`) writes `AUDIT.md` into the project: manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the signing cert, with file:line evidence and a risk summary.
+- **Resource viewer** — click a drawable/icon (`png/jpg/webp/gif/bmp/ico`) to render it instead of raw bytes; `[ TABLE ▦ ]` renders a `res/values*` XML (strings, arrays, colors…) as a filterable name/value table.
 - Built-in Claude assistant (conversation memory, editable pre-prompt, orange tree-flash on file reads)
 - Missing-tool handling + setup banner, apktool version warning + updater
 - Cross-platform (macOS/Windows/Linux), native macOS Dock app, MCP server for Claude Code
@@ -37,9 +39,7 @@ Contributions welcome; open an issue to claim one.
 ## Quick wins
 
 - [ ] **Tracker / SDK detection** — flag bundled ad / analytics / tracking SDKs (Exodus-style signatures) in the INFO panel.
-- [ ] **Report export** — dump findings (manifest risks, secrets, URLs, crypto issues) as a shareable Markdown / HTML audit report.
-- [ ] **Resource viewer** — render drawables / icons and the strings table instead of raw XML.
-- [ ] **Claude "full audit" button** — one click runs a structured Claude pass and writes `AUDIT.md` into the project.
+- [ ] **Claude "full audit" button** — one click runs a structured Claude pass over the static report and writes `AUDIT-claude.md` (narrative findings, confirmed-in-context), complementing the static `export_report` (`AUDIT.md`).
 - [ ] **Per-project bookmarks / notes** — mark interesting classes / lines while exploring.
 
 ## Polish
