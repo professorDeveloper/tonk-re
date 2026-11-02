@@ -30,7 +30,8 @@ Runs on **macOS**, **Windows** and **Linux**.
 - **Native `.so` analysis** — click any native library to open a read-only report: architecture/bitness, SONAME and NEEDED libs, **JNI entry points** (`Java_*` / `JNI_OnLoad`), exported & imported functions, exploit mitigations (exec-stack / RELRO / stack-canary / FORTIFY), and URLs/strings with a secret scan. Pure-stdlib ELF parser (no external tool); optional radare2 pseudo-code when installed. Unblocks Flutter / NDK / game apps where the logic lives in native code.
 - **One-click & guided patches** — the `[ PATCH ▾ ]` menu's **Make interceptable (MITM)** sets `debuggable`, allows cleartext and injects a `network_security_config` trusting user CA certs (the standard Burp / mitmproxy prep). **Right-click any method** in Java or smali for Frida (trace / override return), "ask Claude for a Frida hook", or a **guided smali patch** — force return true/false, return null/0, or no-op — then BUILD+SIGN. The static counterpart to the Frida generator, ideal for root/premium/license gates.
 - **Java ⇄ smali bridge** — read a class in clean decompiled Java, then jump straight to its smali (multidex- and inner-class-aware) to patch it and rebuild.
-- **Audit report export** — one click (`[ REPORT ↯ ]`, or `export_report` / `tonkre report`) writes a Markdown **`AUDIT.md`** into the project: a risk summary, the manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the signing certificate, each with `file:line` evidence. One shareable artifact that reuses every scanner.
+- **Scored security audit + report export** — one click (`[ AUDIT ↯ ]`, or `export_report` / `security_audit` / `tonkre audit`) runs a MASVS-style audit: every finding is tagged with a **severity** (critical→info), an **OWASP MASVS category** and a **remediation**, rolled up into a **0–100 score and letter grade**. It writes both **`AUDIT.md`** and a styled, self-contained **`AUDIT.html`** dashboard (score dial, severity chips, collapsible findings) shown in an in-app view — consolidating the manifest attack surface, hard-coded secrets, endpoints, **detected third-party trackers/SDKs**, crypto/security findings and the signing certificate, each with `file:line` evidence. Reuses every scanner.
+- **Tracker / SDK detection** — ~35 Exodus-style signatures (AdMob, Firebase, Facebook/Meta, AppsFlyer, Adjust, Unity Ads, AppLovin, ironSource, Sentry, OneSignal…) matched against class package paths and grouped by purpose (ads / analytics / crash / attribution / push) for a privacy review.
 - **Resource viewer** — click a drawable or icon (`png/jpg/webp/gif/bmp/ico`) to render it in place of raw bytes, and hit `[ TABLE ▦ ]` on any `res/values*` XML to read it as a filterable name/value table (strings, arrays, colors, dimens…) instead of raw XML.
 - **Rebuild & sign** — `BUILD` (apktool), `SIGN` (zipalign + apksigner v1–v3), `BUILD+SIGN`, `INSTALL ▸ ADB`, and `RESIGN APK` for any existing APK. A debug keystore is generated automatically. If apktool's resource re-linking fails (common with heavily-optimized or obfuscated apps), BUILD automatically **falls back to a code-only build** — it patches the freshly-compiled dex into a copy of the original APK, so smali/code patches still produce a working signed APK (original resources kept).
 - **Ask Claude** — a built-in chat panel runs the `claude` CLI inside the project (read-only, or tick **WRITE** to let it create/edit files in the project folder and `~/Downloads` only), with your editor selection as context, and links file:line references straight into the editor. The conversation has memory (**+ NEW SESSION** starts fresh), and an editable **pre-prompt** template (saved per machine) wraps every question so you can pin a role/output format (e.g. an OWASP MASVS audit).
@@ -167,7 +168,8 @@ tonkre smali    <project> <class>      # smali path(s) for a Java class
 tonkre native   <project> <so_path>    # analyze a native .so (arch, JNI, exports, mitigations)
 tonkre mitm     <project>              # make interceptable (debuggable + user-CA network config)
 tonkre patch    <project> <class> <method> [force_true|force_false|return_zero|return_null|noop]
-tonkre report   <project>              # write a Markdown audit report (AUDIT.md) into the project
+tonkre report   <project>              # write AUDIT.md + AUDIT.html (scored audit) into the project
+tonkre audit    <project>              # scored MASVS findings + trackers as JSON (no files written)
 ```
 
 ### With Claude Code
@@ -178,7 +180,7 @@ After install, the `tonk-re` MCP server is registered. In any `claude` session y
 decompile ~/Downloads/app.apk and audit it for hard-coded secrets and insecure crypto
 ```
 
-Claude will call the `tonk-re` tools (`decompile_apk`, `apk_info`, `find_secrets`, `find_crypto_and_security`, `search_code`, `read_class`, `xrefs`, `analyze_native`, `decompile_native`, `make_interceptable`, `patch_method`, `export_report`, …) and report back with file:line evidence. A bundled skill guides the workflow.
+Claude will call the `tonk-re` tools (`decompile_apk`, `apk_info`, `find_secrets`, `find_crypto_and_security`, `search_code`, `read_class`, `xrefs`, `analyze_native`, `decompile_native`, `make_interceptable`, `patch_method`, `security_audit`, `export_report`, …) and report back with file:line evidence. A bundled skill guides the workflow.
 
 ## Configuration
 

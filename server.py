@@ -31,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import tools  # noqa: E402
 import native  # noqa: E402  (pure-stdlib ELF/.so analysis)
 import patches  # noqa: E402  (manifest + smali patch engine)
-import report  # noqa: E402  (Markdown audit-report renderer)
+import report  # noqa: E402  (Markdown/HTML audit-report renderer)
+import audit  # noqa: E402  (scored MASVS-style findings + tracker detection)
 
 tools.activate()  # managed ~/.tonkre/tools (jadx, apktool, JDK, SDK) onto PATH for every subprocess
 
@@ -845,6 +846,7 @@ def build_report_data(project: str) -> dict:
         "secrets": _secrets_data(proj),
         "urls": _urls_data(proj),
         "security": _security_data(proj),
+        "classes": sorted(_class_set(proj)),  # for tracker/SDK signature matching
     }
     try:
         data["signing"] = signing_info(project)
@@ -853,24 +855,45 @@ def build_report_data(project: str) -> dict:
     return data
 
 
-def write_report(project: str) -> dict:
-    """Render AUDIT.md into the project directory. Returns a summary of what it contains."""
+def run_audit(project: str) -> tuple[dict, dict]:
+    """Gather analysis + score it. Returns (data, audit_result)."""
     data = build_report_data(project)
-    md = report.build_markdown(data)
-    out = _project_dir(project) / "AUDIT.md"
-    out.write_text(md, encoding="utf-8")
-    return {"path": "AUDIT.md", "bytes": len(md.encode("utf-8")),
+    trackers = audit.detect_trackers(data.get("classes", []))
+    return data, audit.evaluate(data, trackers)
+
+
+def write_report(project: str) -> dict:
+    """Render AUDIT.md + AUDIT.html (scored dashboard) into the project. Returns a summary."""
+    data, result = run_audit(project)
+    proj = _project_dir(project)
+    md = report.build_markdown(data, result)
+    html_doc = report.build_html(data, result)
+    (proj / "AUDIT.md").write_text(md, encoding="utf-8")
+    (proj / "AUDIT.html").write_text(html_doc, encoding="utf-8")
+    return {"path": "AUDIT.md", "html": "AUDIT.html", "bytes": len(md.encode("utf-8")),
+            "score": result["score"], "grade": result["grade"], "counts": result["counts"],
             "secret_types": len(data["secrets"]), "urls": len(data["urls"]),
-            "security_groups": len(data["security"])}
+            "trackers": len(result["trackers"]), "findings": len(result["findings"])}
 
 
 @mcp.tool()
 def export_report(project: str) -> str:
-    """Write a Markdown security-audit report (AUDIT.md) into the project, consolidating the
-    manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the
-    signing certificate with file:line evidence. Returns the path and a summary. Regex hits are
+    """Write a security-audit report into the project as AUDIT.md (Markdown) and AUDIT.html (a
+    styled, self-contained dashboard). Consolidates the scored findings, manifest attack surface,
+    hard-coded secrets, endpoints, trackers/SDKs, crypto/security findings and the signing
+    certificate with file:line evidence. Returns the paths, score and grade. Regex hits are
     leads — verify each in context before relying on them."""
     return _truncate(json.dumps(write_report(project), indent=2))
+
+
+@mcp.tool()
+def security_audit(project: str) -> str:
+    """Scored MASVS-style security audit: evaluates the manifest, secrets, crypto/security scans
+    and third-party trackers into triaged findings (severity + MASVS category + remediation), an
+    overall score (0-100) and a letter grade. Returns JSON; use export_report to also write the
+    AUDIT.md / AUDIT.html files. Findings are heuristic leads — confirm each in context."""
+    _, result = run_audit(project)
+    return _truncate(json.dumps(result, indent=2))
 
 
 # ---------- CLI ----------
@@ -881,7 +904,7 @@ def cli(argv: list[str]) -> None:
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
              "smali PROJECT CLASS | native PROJECT SO_PATH | mitm PROJECT | "
              "patch PROJECT CLASS METHOD [force_true|force_false|return_zero|return_null|noop] | "
-             "report PROJECT | "
+             "report PROJECT | audit PROJECT | "
              "setup [status|all|COMPONENT...] [--accept-android-license]>")
     if not argv:
         sys.exit(usage)
@@ -921,6 +944,8 @@ def cli(argv: list[str]) -> None:
         print(patch_method(rest[0], rest[1], rest[2], rest[3] if len(rest) > 3 else "force_true"))
     elif cmd == "report" and rest:
         print(export_report(rest[0]))
+    elif cmd == "audit" and rest:
+        print(security_audit(rest[0]))
     else:
         sys.exit(usage)
 
