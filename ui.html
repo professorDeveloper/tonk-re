@@ -95,6 +95,26 @@ body.resizing{cursor:col-resize;user-select:none}
   color:var(--dim);z-index:2;background:var(--bg);text-align:center;padding:20px}
 #empty pre{font-size:13px;line-height:13px;color:var(--fg)}
 #empty.drag{outline:2px dashed var(--fg);outline-offset:-14px}
+/* resource viewer: rendered image / values-table overlay over the editor */
+#resview{position:absolute;inset:0;z-index:3;background:var(--bg);overflow:auto;display:none}
+#resview[hidden]{display:none}
+#resview.on{display:block}
+.resvbar{display:flex;align-items:center;gap:12px;padding:6px 12px;border-bottom:1px solid var(--line);
+  color:var(--amber);position:sticky;top:0;background:var(--panel);font-size:13px}
+.resvbar .meta{color:var(--dim)}
+.resvbar .resvx{margin-left:auto;border:1px solid var(--line);padding:0 8px}
+.resvbar input{flex:0 1 220px;background:var(--bg);color:var(--fg);border:1px solid var(--line);
+  font-family:'IBM Plex Mono';font-size:12px;padding:2px 6px}
+.resvimg{display:flex;align-items:center;justify-content:center;padding:24px;min-height:calc(100% - 40px)}
+.resvimg img{max-width:100%;max-height:100%;image-rendering:auto;
+  background:repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/20px 20px;border:1px solid var(--line)}
+#resview table{border-collapse:collapse;width:100%;font-size:12px}
+#resview th,#resview td{border:1px solid var(--line);padding:3px 8px;text-align:left;vertical-align:top;
+  word-break:break-word}
+#resview th{position:sticky;top:33px;background:var(--panel);color:var(--amber)}
+#resview td.ty{color:var(--dim);white-space:nowrap}
+#resview td.nm{color:var(--fg);white-space:nowrap}
+#resview tr:hover td{background:#0a1f0f}
 #edfoot{display:flex;gap:16px;padding:0 10px;border-top:1px solid var(--line);color:var(--dim);font-size:17px}
 
 /* CodeMirror phosphor theme */
@@ -236,6 +256,7 @@ body.resizing{cursor:col-resize;user-select:none}
     <span class="sep">│</span>
     <button id="bResign" class="warn">[ RESIGN APK ]</button>
     <button id="bDiff">[ DIFF ⇄ ]</button>
+    <button id="bReport" data-p title="Write a Markdown audit report (AUDIT.md) into the project">[ REPORT ↯ ]</button>
     <button id="bPatch" class="warn" data-p title="One-click patches: MITM / make interceptable">[ PATCH ▾ ]</button>
     <button id="bSetup" title="Install / check jadx, apktool, JDK, Android tools, frida">[ SETUP ⚙ ]</button>
   </div>
@@ -262,9 +283,11 @@ body.resizing{cursor:col-resize;user-select:none}
         <div>⌘S save · ⌘F find · ⌥G goto line · edit smali → BUILD+SIGN</div>
       </div>
       <textarea id="ed"></textarea>
+      <div id="resview" hidden></div>
     </div>
     <div id="edfoot"><span id="fName">-</span><span id="fMode"></span>
       <button id="bCounterpart" style="font-size:16px;padding:0 6px;display:none"></button>
+      <button id="bTable" style="font-size:16px;padding:0 6px;display:none" title="Render values XML as a table">[ TABLE ▦ ]</button>
       <span id="fPos" style="margin-left:auto"></span>
       <button id="bSave" style="font-size:16px;padding:0 6px">[ SAVE ]</button></div>
   </section>
@@ -499,7 +522,9 @@ async function loadProjects(select) {
 $("#proj").onchange = e => openProject(e.target.value);
 
 async function openProject(p) {
+  hideRes();
   project = p; files = {}; current = null; renderTabs(); showEmpty(true);
+  $("#bTable").style.display = "none";
   $("#sProj").textContent = p || "none"; setButtons();
   $("#tree").innerHTML = ""; $("#bCounterpart").style.display = "none";
   $("#intentOut").innerHTML = ""; delete $("#intentOut").dataset.loaded;
@@ -539,7 +564,7 @@ async function refreshDir(path) {
   for (const d of open) { const n = $(`.node[data-path="${CSS.escape(d)}"]`); if (n) await n.onclick(); }
   const a = current && $(`.node[data-path="${CSS.escape(current)}"]`); a && a.classList.add("active");
 }
-const fileIcon = n => /\.java$/.test(n) ? "J " : /\.smali$/.test(n) ? "S " : /\.xml$/.test(n) ? "X " : /\.so$/.test(n) ? "⚙ " : /\.apk$/.test(n) ? "▣ " : "· ";
+const fileIcon = n => /\.java$/.test(n) ? "J " : /\.smali$/.test(n) ? "S " : /\.(png|jpe?g|gif|webp|bmp|ico)$/i.test(n) ? "▦ " : /\.xml$/.test(n) ? "X " : /\.so$/.test(n) ? "⚙ " : /\.apk$/.test(n) ? "▣ " : /\.md$/i.test(n) ? "▤ " : "· ";
 
 // expand the tree down to a file path (top-down, lazily rendering each level)
 async function expandTo(path) {
@@ -599,9 +624,78 @@ function modeFor(p) {
 }
 const showEmpty = on => $("#empty").style.display = on ? "flex" : "none";
 
+// ---------- resource viewer (rendered image / values table over the editor) ----------
+const IMG_RE = /\.(png|jpe?g|gif|webp|bmp|ico)$/i;
+const VALUES_RE = /apktool\/res\/values[^/]*\/[^/]+\.xml$/;
+function showRes(html) {
+  const r = $("#resview");
+  r.innerHTML = html; r.hidden = false; r.classList.add("on");
+  cm.getWrapperElement().style.display = "none"; showEmpty(false);
+}
+function hideRes() {
+  const r = $("#resview");
+  if (r.hidden) return;
+  r.hidden = true; r.classList.remove("on"); r.innerHTML = "";
+  cm.getWrapperElement().style.display = "";
+}
+function markActiveNode(path) {
+  $$(".node.active").forEach(n => n.classList.remove("active"));
+  const n = $(`.node[data-path="${CSS.escape(path)}"]`); n && n.classList.add("active");
+}
+// return to the editor (or the empty state) from a resource overlay
+function closeRes() { hideRes(); current ? openFile(current) : showEmpty(true); cm.refresh(); }
+
+function showImage(path) {
+  const src = "/api/raw?" + new URLSearchParams({project, path, t: TOKEN});
+  showRes(`<div class="resvbar"><span>${esc(path)}</span><span class="meta" id="imgMeta"></span>
+      <button class="resvx">[ CLOSE ]</button></div>
+    <div class="resvimg"><img id="resImg" alt="${esc(path)}"></div>`);
+  const img = $("#resImg");
+  img.onload = () => { $("#imgMeta").textContent = `${img.naturalWidth}×${img.naturalHeight}px`; };
+  img.onerror = () => { $("#imgMeta").textContent = "preview unavailable"; };
+  img.src = src;
+  $("#resview .resvx").onclick = closeRes;
+  markActiveNode(path);
+  $("#fName").textContent = path + "  (image)"; $("#fMode").textContent = "IMAGE";
+  $("#bTable").style.display = "none"; $("#bCounterpart").style.display = "none";
+}
+
+// render a res/values XML (strings, arrays, colors, ...) as a filterable table
+function showTable(path) {
+  const f = files[path];
+  if (!f) return;
+  let doc;
+  try { doc = new DOMParser().parseFromString(f.doc.getValue(), "application/xml"); } catch { return; }
+  const root = doc.documentElement;
+  if (!root || doc.querySelector("parsererror")) return log("[!] could not parse XML for a table view");
+  const rows = [...root.children].filter(el => el.nodeType === 1).map(el => {
+    const val = el.children.length ? [...el.children].map(c => c.textContent.trim()).join("  |  ")
+                                   : el.textContent.trim();
+    return [el.tagName, el.getAttribute("name") || "", val];
+  });
+  showRes(`<div class="resvbar"><span>${esc(path)}</span>
+      <span class="meta">${rows.length} entries</span>
+      <input id="resFilter" placeholder="filter name / value...">
+      <button class="resvx">[ CLOSE ]</button></div>
+    <table><thead><tr><th style="width:1%">TYPE</th><th style="width:1%">NAME</th><th>VALUE</th></tr></thead>
+    <tbody id="resBody"></tbody></table>`);
+  const render = q => {
+    q = (q || "").toLowerCase();
+    $("#resBody").innerHTML = rows.filter(r => !q || (r[1] + r[2]).toLowerCase().includes(q))
+      .map(r => `<tr><td class="ty">${esc(r[0])}</td><td class="nm">${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join("");
+  };
+  render("");
+  $("#resFilter").oninput = e => render(e.target.value);
+  $("#resview .resvx").onclick = closeRes;
+}
+$("#bTable").onclick = () => current && showTable(current);
+
 async function openFile(path, line) {
   // native libs open as a read-only analysis report, not raw bytes
   if (/\.so$/i.test(path) && !files[path]) return openNative(path);
+  // images render instead of dumping bytes into the editor
+  if (IMG_RE.test(path)) return showImage(path);
+  hideRes();
   if (!files[path]) {
     let r;
     try { r = await get("/api/file", {project, path}); } catch (e) { return log("[-] " + e.message); }
@@ -618,6 +712,7 @@ async function openFile(path, line) {
   const n = $(`.node[data-path="${CSS.escape(path.replace(/^native:\/\//, ""))}"]`); n && n.classList.add("active");
   renderTabs();
   updateCounterpart(files[path].synthetic ? "" : path);
+  $("#bTable").style.display = (!files[path].synthetic && VALUES_RE.test(path)) ? "" : "none";
   if (line) jump(line);
 }
 
@@ -868,6 +963,23 @@ cm.getWrapperElement().addEventListener("contextmenu", e => {
 });
 
 // ---------- version diff ----------
+// ---------- audit report (AUDIT.md) ----------
+$("#bReport").onclick = async e => {
+  if (busy) return log("[!] busy, wait for the current job");
+  const btn = e.currentTarget; btn.classList.add("busy");
+  log("[*] generating audit report (manifest, secrets, URLs, crypto/security, signing)...");
+  try {
+    const r = await post("/api/report", {project});
+    if (r.error) return log("[-] " + r.error);
+    log(`[+] wrote ${r.path} (${r.bytes.toLocaleString()} bytes) — ${r.secret_types} secret type(s), ` +
+        `${r.urls} URL(s), ${r.security_groups} crypto/security group(s)`);
+    delete files["AUDIT.md"];               // drop any cached copy so we re-read the fresh file
+    await refreshDir("");                    // surface AUDIT.md in the tree root
+    await openFile("AUDIT.md");
+  } catch (e) { log("[-] " + e.message); }
+  finally { btn.classList.remove("busy"); }
+};
+
 $("#bDiff").onclick = async () => {
   const ps = await get("/api/projects");
   if (ps.length < 2) return log("[!] decompile at least two APKs to diff");

@@ -12,6 +12,7 @@ Works on macOS, Windows and Linux. Binds to 127.0.0.1 only; every API call needs
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import secrets
 import shutil
@@ -568,6 +569,24 @@ class H(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+        if u.path == "/api/raw":
+            # Raw resource bytes for the <img> viewer. <img src> can't send the X-Token
+            # header, so (like "/") the token rides in the query string. Still 127.0.0.1-only.
+            if q.get("t") != TOKEN:
+                self.send_error(403, "bad token")
+                return
+            try:
+                f = core._safe_join(core._project_dir(q.get("project", "")), q.get("path", ""))
+                data = f.read_bytes()
+            except Exception as e:
+                self.send_error(404, str(e))
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if not self._authed():
             return
         try:
@@ -662,6 +681,8 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/decompile_native":
                 f = core._safe_join(core._project_dir(body["project"]), body["path"])
                 return self._json(core.native.decompile_native(f, body.get("symbol", "")))
+            if u.path == "/api/report":
+                return self._json(core.write_report(body["project"]))
             if u.path == "/api/preprompt":
                 HOME.mkdir(parents=True, exist_ok=True)
                 PREPROMPT_FILE.write_text(body["text"], encoding="utf-8")
