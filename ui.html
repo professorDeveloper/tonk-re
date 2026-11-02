@@ -105,6 +105,8 @@ body.resizing{cursor:col-resize;user-select:none}
 .resvbar .resvx{margin-left:auto;border:1px solid var(--line);padding:0 8px}
 .resvbar input{flex:0 1 220px;background:var(--bg);color:var(--fg);border:1px solid var(--line);
   font-family:'IBM Plex Mono';font-size:12px;padding:2px 6px}
+.resvbar .resvmd{border:1px solid var(--line);padding:0 8px}
+#resview .resframe{position:absolute;top:34px;left:0;right:0;bottom:0;width:100%;border:0;background:var(--bg)}
 .resvimg{display:flex;align-items:center;justify-content:center;padding:24px;min-height:calc(100% - 40px)}
 .resvimg img{max-width:100%;max-height:100%;image-rendering:auto;
   background:repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/20px 20px;border:1px solid var(--line)}
@@ -256,7 +258,7 @@ body.resizing{cursor:col-resize;user-select:none}
     <span class="sep">│</span>
     <button id="bResign" class="warn">[ RESIGN APK ]</button>
     <button id="bDiff">[ DIFF ⇄ ]</button>
-    <button id="bReport" data-p title="Write a Markdown audit report (AUDIT.md) into the project">[ REPORT ↯ ]</button>
+    <button id="bReport" data-p title="Run a scored security audit → AUDIT.html dashboard + AUDIT.md">[ AUDIT ↯ ]</button>
     <button id="bPatch" class="warn" data-p title="One-click patches: MITM / make interceptable">[ PATCH ▾ ]</button>
     <button id="bSetup" title="Install / check jadx, apktool, JDK, Android tools, frida">[ SETUP ⚙ ]</button>
   </div>
@@ -963,22 +965,40 @@ cm.getWrapperElement().addEventListener("contextmenu", e => {
 });
 
 // ---------- version diff ----------
-// ---------- audit report (AUDIT.md) ----------
+// ---------- security audit (AUDIT.md + AUDIT.html dashboard) ----------
 $("#bReport").onclick = async e => {
   if (busy) return log("[!] busy, wait for the current job");
   const btn = e.currentTarget; btn.classList.add("busy");
-  log("[*] generating audit report (manifest, secrets, URLs, crypto/security, signing)...");
+  log("[*] running security audit (manifest, secrets, URLs, crypto, trackers, signing)...");
   try {
     const r = await post("/api/report", {project});
     if (r.error) return log("[-] " + r.error);
-    log(`[+] wrote ${r.path} (${r.bytes.toLocaleString()} bytes) — ${r.secret_types} secret type(s), ` +
-        `${r.urls} URL(s), ${r.security_groups} crypto/security group(s)`);
+    const c = r.counts || {};
+    log(`[+] score ${r.score}/100 — grade ${r.grade}  ·  ${r.findings} finding(s) ` +
+        `(${c.critical || 0} crit / ${c.high || 0} high / ${c.medium || 0} med / ${c.low || 0} low), ` +
+        `${r.trackers} tracker(s), ${r.secret_types} secret type(s), ${r.urls} URL(s)`);
+    log(`[+] wrote ${r.path} + ${r.html}`);
     delete files["AUDIT.md"];               // drop any cached copy so we re-read the fresh file
-    await refreshDir("");                    // surface AUDIT.md in the tree root
-    await openFile("AUDIT.md");
+    await refreshDir("");                    // surface AUDIT.md / AUDIT.html in the tree root
+    showReport(r.html);
   } catch (e) { log("[-] " + e.message); }
   finally { btn.classList.remove("busy"); }
 };
+
+// render the HTML audit dashboard in an in-app iframe overlay
+function showReport(path) {
+  const src = "/api/raw?" + new URLSearchParams({project, path, t: TOKEN});
+  showRes(`<div class="resvbar"><span>${esc(path)}</span>
+      <span class="meta">security audit dashboard</span>
+      <button class="resvmd" title="Open the Markdown version in the editor">[ MARKDOWN ]</button>
+      <button class="resvx">[ CLOSE ]</button></div>
+    <iframe class="resframe" src="${src}"></iframe>`);
+  $("#resview .resvx").onclick = closeRes;
+  $("#resview .resvmd").onclick = () => { delete files["AUDIT.md"]; openFile("AUDIT.md"); };
+  markActiveNode(path);
+  $("#fName").textContent = path + "  (dashboard)"; $("#fMode").textContent = "AUDIT";
+  $("#bTable").style.display = "none"; $("#bCounterpart").style.display = "none";
+}
 
 $("#bDiff").onclick = async () => {
   const ps = await get("/api/projects");

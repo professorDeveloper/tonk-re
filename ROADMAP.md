@@ -18,7 +18,9 @@ Contributions welcome; open an issue to claim one.
 - **One-click "Make interceptable" (MITM) patch** — debuggable + a `network_security_config` trusting user CA certs + cleartext, via the `[ PATCH ▾ ]` menu (`make_interceptable`).
 - **Guided smali patches** — right-click a method → force return true/false, return null/0, no-op → smali rewrite, then BUILD (`patch_method`). Static counterpart to the Frida generator.
 - **Editor method menu** — right-click a Java/smali method for Frida (trace / override return), "ask Claude for a Frida hook", and the guided smali patches above.
-- **Report export** — one-click `[ REPORT ↯ ]` (and `export_report` / `tonkre report`) writes `AUDIT.md` into the project: manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the signing cert, with file:line evidence and a risk summary.
+- **Scored security audit** — `security_audit` (MCP) / `tonkre audit` evaluates the manifest, secrets, crypto/security scans and detected trackers into triaged findings (severity + OWASP MASVS category + remediation) with a 0–100 score and letter grade (engine: `audit.py`).
+- **Tracker / SDK detection** — signature table (`audit.TRACKER_SIGNATURES`, ~35 ad/analytics/crash/attribution/push SDKs) matched against class package paths; surfaced in the audit + report.
+- **Report export** — one-click `[ AUDIT ↯ ]` (and `export_report` / `tonkre report`) writes `AUDIT.md` **and** a styled, self-contained `AUDIT.html` dashboard (score dial, severity chips, collapsible findings) into the project, shown in an in-app iframe. Consolidates the scored findings, manifest attack surface, secrets, endpoints, trackers, crypto/security and the signing cert with file:line evidence.
 - **Resource viewer** — click a drawable/icon (`png/jpg/webp/gif/bmp/ico`) to render it instead of raw bytes; `[ TABLE ▦ ]` renders a `res/values*` XML (strings, arrays, colors…) as a filterable name/value table.
 - Built-in Claude assistant (conversation memory, editable pre-prompt, orange tree-flash on file reads)
 - Missing-tool handling + setup banner, apktool version warning + updater
@@ -38,7 +40,6 @@ Contributions welcome; open an issue to claim one.
 
 ## Quick wins
 
-- [ ] **Tracker / SDK detection** — flag bundled ad / analytics / tracking SDKs (Exodus-style signatures) in the INFO panel.
 - [ ] **Claude "full audit" button** — one click runs a structured Claude pass over the static report and writes `AUDIT-claude.md` (narrative findings, confirmed-in-context), complementing the static `export_report` (`AUDIT.md`).
 - [ ] **Per-project bookmarks / notes** — mark interesting classes / lines while exploring.
 
